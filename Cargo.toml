@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 crossbeam-channel = "0.5.12"
+crypto-hash = "0.3.4"
+tempfile = "3.10.1"

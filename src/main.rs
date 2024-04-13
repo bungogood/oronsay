@@ -7,6 +7,7 @@ use std::{
 
 use clap::Parser;
 use crossbeam_channel;
+use tempfile::NamedTempFile;
 
 mod reader;
 mod worker;
@@ -18,20 +19,11 @@ struct Args {
     infile: PathBuf,
     outfile: Option<PathBuf>,
 
+    #[clap(short = 't', long = "threads")]
     num_threads: Option<usize>,
-}
 
-fn create_reader(infile: PathBuf) -> io::Result<BufReader<File>> {
-    let infile = File::open(infile)?;
-    Ok(BufReader::new(infile))
-}
-
-fn create_writer(outfile: Option<PathBuf>) -> io::Result<BufWriter<Box<dyn io::Write + Send>>> {
-    let writer: Box<dyn io::Write + Send> = match outfile {
-        Some(path) => Box::new(File::create(path)?),
-        None => Box::new(io::sink()),
-    };
-    Ok(BufWriter::new(writer))
+    #[clap(short, long)]
+    verbose: bool,
 }
 
 fn get_num_threads() -> usize {
@@ -48,19 +40,40 @@ fn main() -> io::Result<()> {
     let (read_tx, read_rx) = crossbeam_channel::unbounded();
     let (write_tx, write_rx) = crossbeam_channel::unbounded();
 
-    let buf_reader = create_reader(args.infile)?;
-    let buf_writer = create_writer(args.outfile)?;
+    let infile = File::open(&args.infile)?;
+    let (outfile, temp_file) = match args.outfile {
+        Some(ref path) => (File::create(path)?, None),
+        None => {
+            let temp_file = NamedTempFile::new()?;
+            (temp_file.reopen()?, Some(temp_file))
+        }
+    };
+
+    let buf_reader = BufReader::new(infile);
+    let buf_writer = BufWriter::new(outfile);
 
     let reader_thread = reader::start_reader(buf_reader, read_tx);
     let worker_threads = worker::start_workers(num_workers, read_rx, write_tx);
     let writer_thread = writer::start_writer(buf_writer, write_rx);
 
-    // Join threads
     reader_thread.join().unwrap();
     for worker in worker_threads {
         worker.join().unwrap();
     }
     writer_thread.join().unwrap();
+
+    if args.verbose {
+        let outpath = match temp_file.as_ref() {
+            Some(temp_file) => temp_file.path().to_path_buf(),
+            None => args.outfile.unwrap(),
+        };
+        let out_bytes = std::fs::read(outpath)?;
+
+        let sha256sum = crypto_hash::hex_digest(crypto_hash::Algorithm::SHA256, &out_bytes);
+        // let md5sum = crypto_hash::hex_digest(crypto_hash::Algorithm::MD5, &out_bytes);
+        println!("SHA-256 Hash: {}", sha256sum);
+        // println!("MD5 Hash:     {}", md5sum);
+    }
 
     Ok(())
 }
