@@ -10,3 +10,4 @@ clap = { version = "4.5.4", features = ["derive"] }
 crossbeam-channel = "0.5.12"
 crypto-hash = "0.3.4"
 tempfile = "3.10.1"
+num-format = "0.4.4"
