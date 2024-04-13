@@ -56,9 +56,10 @@ fn main() -> io::Result<()> {
     let worker_threads = worker::start_workers(num_workers, read_rx, write_tx);
     let writer_thread = writer::start_writer(buf_writer, write_rx);
 
+    let mut num_puzzles = 0;
     reader_thread.join().unwrap();
     for worker in worker_threads {
-        worker.join().unwrap();
+        num_puzzles += worker.join().unwrap();
     }
     writer_thread.join().unwrap();
 
@@ -71,6 +72,8 @@ fn main() -> io::Result<()> {
 
         let sha256sum = crypto_hash::hex_digest(crypto_hash::Algorithm::SHA256, &out_bytes);
         // let md5sum = crypto_hash::hex_digest(crypto_hash::Algorithm::MD5, &out_bytes);
+
+        println!("Number of puzzles: {}", num_puzzles);
         println!("SHA-256 Hash: {}", sha256sum);
         // println!("MD5 Hash:     {}", md5sum);
     }
