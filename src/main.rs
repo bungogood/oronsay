@@ -7,6 +7,7 @@ use std::{
 
 use clap::Parser;
 use crossbeam_channel;
+use num_format::{Locale, ToFormattedString};
 use tempfile::NamedTempFile;
 
 mod reader;
@@ -34,6 +35,8 @@ fn get_num_threads() -> usize {
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
+
+    let start = std::time::Instant::now();
 
     let num_workers = args.num_threads.unwrap_or(get_num_threads());
 
@@ -64,16 +67,27 @@ fn main() -> io::Result<()> {
     writer_thread.join().unwrap();
 
     if args.verbose {
+        let time_taken = start.elapsed();
         let outpath = match temp_file.as_ref() {
             Some(temp_file) => temp_file.path().to_path_buf(),
             None => args.outfile.unwrap(),
         };
         let out_bytes = std::fs::read(outpath)?;
 
+        let sudokus_rate = num_puzzles as f64 / time_taken.as_secs_f64();
+        let avg_time = time_taken / num_puzzles as u32;
+        // let guess_rate = guesses as f32 / num_puzzles as f32;
+
         let sha256sum = crypto_hash::hex_digest(crypto_hash::Algorithm::SHA256, &out_bytes);
         // let md5sum = crypto_hash::hex_digest(crypto_hash::Algorithm::MD5, &out_bytes);
 
         println!("Number of puzzles: {}", num_puzzles);
+        println!(
+            "Time Taken: {:.2?}, Speed: {}/s, Avg: {:.2?}",
+            time_taken,
+            (sudokus_rate as u32).to_formatted_string(&Locale::en),
+            avg_time
+        );
         println!("SHA-256 Hash: {}", sha256sum);
         // println!("MD5 Hash:     {}", md5sum);
     }
