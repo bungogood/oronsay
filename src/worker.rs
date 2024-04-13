@@ -2,7 +2,11 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::{consts::N_CELLS, sudoku::Sudoku};
+use crate::{
+    consts::N_CELLS,
+    solver::{Solver, SolverBasic},
+    sudoku::Sudoku,
+};
 
 pub fn start_workers(
     num_threads: usize,
@@ -14,9 +18,10 @@ pub fn start_workers(
             let rx = read_rx.clone();
             let tx = write_tx.clone();
             thread::spawn(move || {
+                let mut solver = SolverBasic::new(1, true);
                 let mut num_puzzles = 0;
                 for (index, chunk) in rx {
-                    let (count, solved_chunk) = process_chunk(chunk);
+                    let (count, solved_chunk) = process_chunk(&mut solver, chunk);
                     tx.send((index, solved_chunk))
                         .expect("Error sending chunk to writer");
                     num_puzzles += count;
@@ -27,23 +32,21 @@ pub fn start_workers(
         .collect()
 }
 
-fn process_chunk(chunk: Vec<u8>) -> (usize, Vec<u8>) {
+fn process_chunk<S: Solver>(solver: &mut S, chunk: Vec<u8>) -> (usize, Vec<u8>) {
     let mut solved_chunk = Vec::with_capacity(chunk.len() * 3);
 
     let mut count = 0;
     for puzzle_slice in chunk.chunks_exact(N_CELLS + 1) {
         assert!(puzzle_slice[N_CELLS] == b'\n', "Invalid chunk format");
 
-        let mut sudoku = Sudoku::new(puzzle_slice[..N_CELLS].try_into().unwrap());
+        let sudoku = Sudoku::new(puzzle_slice[..N_CELLS].try_into().unwrap());
 
         solved_chunk.extend_from_slice(sudoku.grid.as_ref());
         solved_chunk.push(b',');
 
-        if !sudoku.solve() {
-            panic!("Failed to solve sudoku");
-        }
+        let solution = solver.solve(&sudoku).expect("Failed to solve sudoku");
 
-        solved_chunk.extend_from_slice(sudoku.grid.as_ref());
+        solved_chunk.extend_from_slice(solution.grid.as_ref());
         solved_chunk.push(b'\n');
 
         count += 1;
