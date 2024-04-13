@@ -52,7 +52,7 @@ fn main() -> io::Result<()> {
     let buf_reader = BufReader::new(infile);
     let buf_writer = BufWriter::new(outfile);
 
-    let reader_thread = reader::start_reader(buf_reader, read_tx);
+    let reader_thread = reader::start_reader(buf_reader, read_tx, write_tx.clone());
     let worker_threads = worker::start_workers(num_workers, read_rx, write_tx);
     let writer_thread = writer::start_writer(buf_writer, write_rx);
 

@@ -8,13 +8,39 @@ use crossbeam_channel::Sender;
 pub fn start_reader<R: Read + Send + 'static>(
     mut reader: BufReader<R>,
     read_tx: Sender<(usize, Vec<u8>)>,
+    write_tx: Sender<(usize, Vec<u8>)>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let buf_size = 16384;
+        let buf_size = 65536; // 64 KiB
 
         let mut current_buffer = vec![0u8; buf_size];
-        let mut next_buffer = Vec::new();
         let mut chunk_index = 0;
+
+        let initial_read_size = match reader.read(&mut current_buffer) {
+            Ok(0) => return, // Handle empty file case
+            Ok(size) => size,
+            Err(e) => {
+                eprintln!("Error reading file: {}", e);
+                return;
+            }
+        };
+
+        // Check for header (if the first newline isn't at the 82nd position, we have a header)
+        let first_newline_pos = current_buffer
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or(initial_read_size);
+
+        let mut next_buffer = if first_newline_pos != 81 {
+            let header = current_buffer[..first_newline_pos + 1].to_vec();
+            write_tx
+                .send((chunk_index, header))
+                .expect("Error sending header to writer");
+            chunk_index += 1;
+            current_buffer[first_newline_pos + 1..initial_read_size].to_vec()
+        } else {
+            current_buffer[..initial_read_size].to_vec()
+        };
 
         loop {
             let read_size = match reader.read(&mut current_buffer) {
