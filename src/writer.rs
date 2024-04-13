@@ -10,7 +10,6 @@ struct HeapItem {
     chunk: Vec<u8>,
 }
 
-// You might already have this, but make sure it's adapted for Vec<u8>
 impl PartialEq for HeapItem {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index
@@ -35,18 +34,15 @@ pub fn start_writer<W: Write + Send + 'static>(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut heap = BinaryHeap::new();
-        let mut next_to_write = 0;
+        let mut next_index = 0;
 
         for (index, chunk) in write_rx.iter() {
             heap.push(HeapItem { index, chunk });
 
-            while heap
-                .peek()
-                .map_or(false, |item| item.index == next_to_write)
-            {
+            while heap.peek().map_or(false, |item| item.index == next_index) {
                 if let Some(item) = heap.pop() {
                     writer.write_all(&item.chunk).unwrap();
-                    next_to_write += 1;
+                    next_index += 1;
                 }
             }
         }

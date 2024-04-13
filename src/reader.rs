@@ -5,6 +5,8 @@ use std::{
 
 use crossbeam_channel::Sender;
 
+use crate::consts::N_CELLS;
+
 pub fn start_reader<R: Read + Send + 'static>(
     mut reader: BufReader<R>,
     read_tx: Sender<(usize, Vec<u8>)>,
@@ -25,13 +27,13 @@ pub fn start_reader<R: Read + Send + 'static>(
             }
         };
 
-        // Check for header (if the first newline isn't at the 82nd position, we have a header)
+        // Check for header
         let first_newline_pos = current_buffer
             .iter()
             .position(|&b| b == b'\n')
             .unwrap_or(initial_read_size);
 
-        let mut next_buffer = if first_newline_pos != 81 {
+        let mut next_buffer = if first_newline_pos != N_CELLS {
             let header = current_buffer[..first_newline_pos + 1].to_vec();
             write_tx
                 .send((chunk_index, header))

@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, BufReader, BufWriter},
+    io::{self, BufReader, BufWriter, Read},
     path::PathBuf,
     thread,
 };
@@ -10,14 +10,15 @@ use crossbeam_channel;
 use num_format::{Locale, ToFormattedString};
 use tempfile::NamedTempFile;
 
-mod reader;
-mod worker;
-mod writer;
+use orsay::{reader, worker, writer};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
-    infile: PathBuf,
+    #[clap(short, long)]
+    infile: Option<PathBuf>,
+
+    #[clap(short, long)]
     outfile: Option<PathBuf>,
 
     #[clap(short = 't', long = "threads")]
@@ -43,7 +44,10 @@ fn main() -> io::Result<()> {
     let (read_tx, read_rx) = crossbeam_channel::unbounded();
     let (write_tx, write_rx) = crossbeam_channel::unbounded();
 
-    let infile = File::open(&args.infile)?;
+    let input: Box<dyn Read + Send> = match args.infile {
+        Some(ref path) => Box::new(File::open(path)?),
+        None => Box::new(io::stdin()),
+    };
     let (outfile, temp_file) = match args.outfile {
         Some(ref path) => (File::create(path)?, None),
         None => {
@@ -52,7 +56,7 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let buf_reader = BufReader::new(infile);
+    let buf_reader = BufReader::new(input);
     let buf_writer = BufWriter::new(outfile);
 
     let reader_thread = reader::start_reader(buf_reader, read_tx, write_tx.clone());
@@ -60,11 +64,11 @@ fn main() -> io::Result<()> {
     let writer_thread = writer::start_writer(buf_writer, write_rx);
 
     let mut num_puzzles = 0;
-    reader_thread.join().unwrap();
+    reader_thread.join().expect("Error joining reader thread");
     for worker in worker_threads {
-        num_puzzles += worker.join().unwrap();
+        num_puzzles += worker.join().expect("Error joining worker thread");
     }
-    writer_thread.join().unwrap();
+    writer_thread.join().expect("Error joining writer thread");
 
     if args.verbose {
         let time_taken = start.elapsed();

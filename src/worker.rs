@@ -2,13 +2,15 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::consts::N_CELLS;
+
 struct Sudoku {
-    puzzle: [u8; 81],
-    solution: [u8; 81],
+    puzzle: [u8; N_CELLS],
+    solution: [u8; N_CELLS],
 }
 
 impl Sudoku {
-    fn new(puzzle: [u8; 81]) -> Self {
+    fn new(puzzle: [u8; N_CELLS]) -> Self {
         Self {
             puzzle,
             solution: puzzle,
@@ -34,7 +36,8 @@ pub fn start_workers(
                 let mut num_puzzles = 0;
                 for (index, chunk) in rx {
                     let (count, solved_chunk) = process_chunk(chunk);
-                    tx.send((index, solved_chunk)).unwrap();
+                    tx.send((index, solved_chunk))
+                        .expect("Error sending chunk to writer");
                     num_puzzles += count;
                 }
                 num_puzzles
@@ -47,14 +50,13 @@ fn process_chunk(chunk: Vec<u8>) -> (usize, Vec<u8>) {
     // Allocate a new vector to hold the processed chunk (duplicated Sudokus)
     let mut solved_chunk = Vec::with_capacity(chunk.len() * 3);
 
-    // Iterate over the chunk in steps of 82 bytes
     let mut count = 0;
-    for puzzle_slice in chunk.chunks_exact(82) {
-        if puzzle_slice[81] != b'\n' {
+    for puzzle_slice in chunk.chunks_exact(N_CELLS + 1) {
+        if puzzle_slice[N_CELLS] != b'\n' {
             panic!("Not implemented header parsing");
         }
 
-        let mut sudoku = Sudoku::new(puzzle_slice[..81].try_into().unwrap());
+        let mut sudoku = Sudoku::new(puzzle_slice[..N_CELLS].try_into().unwrap());
         sudoku.solve();
 
         solved_chunk.extend_from_slice(sudoku.puzzle.as_ref());
