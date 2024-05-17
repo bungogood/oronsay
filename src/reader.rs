@@ -1,46 +1,63 @@
 use std::{
-    io::{BufReader, Read},
+    io::{BufReader, Read, Result},
     thread,
 };
 
 use crossbeam_channel::Sender;
 
-use crate::consts::N_CELLS;
+fn find_newline_positions(buffer: &Vec<u8>) -> Option<(usize, usize)> {
+    let mut positions = Vec::new();
+
+    for (i, &byte) in buffer.iter().enumerate() {
+        if byte == b'\n' {
+            positions.push(i);
+            if positions.len() == 2 {
+                break;
+            }
+        }
+    }
+
+    if positions.len() == 2 {
+        Some((positions[0], positions[1]))
+    } else {
+        None
+    }
+}
 
 pub fn start_reader<R: Read + Send + 'static>(
     mut reader: BufReader<R>,
     read_tx: Sender<(usize, Vec<u8>)>,
     write_tx: Sender<(usize, Vec<u8>)>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let buf_size = 65536; // 64 KiB
+) -> Result<(usize, thread::JoinHandle<()>)> {
+    // let buf_size = 65536; // 64 KiB
+    // let buf_size = 32768; // 32 KiB
+    let buf_size = 16368; // 16 KiB
 
-        let mut current_buffer = vec![0u8; buf_size];
-        let mut chunk_index = 0;
+    let mut current_buffer = vec![0u8; buf_size];
+    let mut chunk_index = 0;
 
-        let initial_read_size = match reader.read(&mut current_buffer) {
-            Ok(0) => return, // Handle empty file case
-            Ok(size) => size,
-            Err(e) => {
-                eprintln!("Error reading file: {}", e);
-                return;
-            }
+    let initial_read_size = reader.read(&mut current_buffer)?;
+
+    let (first, second) = find_newline_positions(&current_buffer).expect("Error finding newlines");
+    let line_length = second - first;
+
+    let reader = thread::spawn(move || {
+        let (pre_fix, post_fix) = if current_buffer[first - 1] == b'\r' {
+            (first - 2, first + 2)
+        } else {
+            (first - 1, first + 1)
         };
 
-        // Check for header
-        let first_newline_pos = current_buffer
-            .iter()
-            .position(|&b| b == b'\n')
-            .unwrap_or(initial_read_size);
-
-        let mut next_buffer = if first_newline_pos != N_CELLS {
-            let header = current_buffer[..first_newline_pos + 1].to_vec();
+        let mut next_buffer = if post_fix != line_length {
+            let mut header = current_buffer[..=pre_fix].to_vec();
+            header.push(b'\n');
             write_tx
                 .send((chunk_index, header))
                 .expect("Error sending header to writer");
             chunk_index += 1;
-            current_buffer[first_newline_pos + 1..initial_read_size].to_vec()
+            current_buffer[first + 1..initial_read_size].to_vec()
         } else {
+            println!("No header found");
             current_buffer[..initial_read_size].to_vec()
         };
 
@@ -87,5 +104,7 @@ pub fn start_reader<R: Read + Send + 'static>(
                 eprintln!("Error sending final carry-over chunk to workers");
             }
         }
-    })
+    });
+
+    Ok((line_length, reader))
 }

@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{self, BufReader, BufWriter, Read},
     path::PathBuf,
     thread,
@@ -60,8 +60,8 @@ fn main() -> io::Result<()> {
     let buf_reader = BufReader::new(input);
     let buf_writer = BufWriter::new(outfile);
 
-    let reader_thread = reader::start_reader(buf_reader, read_tx, write_tx.clone());
-    let worker_threads = worker::start_workers(num_workers, read_rx, write_tx);
+    let (line_length, reader_thread) = reader::start_reader(buf_reader, read_tx, write_tx.clone())?;
+    let worker_threads = worker::start_workers(num_workers, line_length, read_rx, write_tx);
     let writer_thread = writer::start_writer(buf_writer, write_rx);
 
     let mut stats = Stats::new();
@@ -99,11 +99,11 @@ fn display_stats(stats: &Stats, duration: Duration, outpath: &PathBuf) -> io::Re
         avg_time
     );
     println!(
-        "No Guesses: {:.2}%, Guess Rate: {:.2} per puzzle",
+        "No Guesses: {:.2}%, Avg Guesses: {:.2}",
         no_guess_percent, guess_rate
     );
 
-    let out_bytes = std::fs::read(outpath)?;
+    let out_bytes = fs::read(outpath)?;
     let sha256sum = crypto_hash::hex_digest(crypto_hash::Algorithm::SHA256, &out_bytes);
     // let md5sum = crypto_hash::hex_digest(crypto_hash::Algorithm::MD5, &out_bytes);
 

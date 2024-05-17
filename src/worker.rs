@@ -9,6 +9,7 @@ use crate::{
 
 pub fn start_workers(
     num_threads: usize,
+    line_length: usize,
     read_rx: Receiver<(usize, Vec<u8>)>,
     write_tx: Sender<(usize, Vec<u8>)>,
 ) -> Vec<thread::JoinHandle<Stats>> {
@@ -20,7 +21,7 @@ pub fn start_workers(
                 let mut solver = SolverBasic::new(1, true);
                 let mut stats = Stats::new();
                 for (index, chunk) in rx {
-                    let solved_chunk = process_chunk(&mut solver, &mut stats, chunk);
+                    let solved_chunk = process_chunk(line_length, &mut solver, &mut stats, chunk);
                     tx.send((index, solved_chunk))
                         .expect("Error sending chunk to writer");
                 }
@@ -30,11 +31,16 @@ pub fn start_workers(
         .collect()
 }
 
-fn process_chunk<S: Solver>(solver: &mut S, stats: &mut Stats, chunk: Vec<u8>) -> Vec<u8> {
+fn process_chunk<S: Solver>(
+    line_length: usize,
+    solver: &mut S,
+    stats: &mut Stats,
+    chunk: Vec<u8>,
+) -> Vec<u8> {
     let mut solved_chunk = Vec::with_capacity(chunk.len() * 3);
 
-    for puzzle_slice in chunk.chunks_exact(N_CELLS + 1) {
-        assert!(puzzle_slice[N_CELLS] == b'\n', "Invalid chunk format");
+    for puzzle_slice in chunk.chunks_exact(line_length) {
+        // assert!(puzzle_slice[N_CELLS] == b'\n', "Invalid chunk format");
 
         let sudoku = Sudoku::new(puzzle_slice[..N_CELLS].try_into().unwrap());
 
