@@ -57,7 +57,6 @@ pub fn start_reader<R: Read + Send + 'static>(
             chunk_index += 1;
             current_buffer[first + 1..initial_read_size].to_vec()
         } else {
-            println!("No header found");
             current_buffer[..initial_read_size].to_vec()
         };
 
