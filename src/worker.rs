@@ -1,63 +1,93 @@
-use crossbeam_channel::{Receiver, Sender};
 use std::thread;
 
+use crossbeam::channel;
+
 use crate::{
-    consts::N_CELLS,
-    solver::{Solver, SolverBasic, Stats},
-    sudoku::Sudoku,
+    solver::Solver,
+    sudoku::{Puzzle, N_CELLS},
+    types::{ChunkStats, PuzzleChunk, SolvedChunk},
 };
 
-pub fn start_workers(
-    num_threads: usize,
+pub struct Worker<S: Solver> {
+    solver: S,
     line_length: usize,
-    read_rx: Receiver<(usize, Vec<u8>)>,
-    write_tx: Sender<(usize, Vec<u8>)>,
-) -> Vec<thread::JoinHandle<Stats>> {
-    (0..num_threads)
-        .map(|_| {
-            let rx = read_rx.clone();
-            let tx = write_tx.clone();
-            thread::spawn(move || {
-                let mut solver = SolverBasic::new(1, true);
-                let mut stats = Stats::new();
-                for (index, chunk) in rx {
-                    let solved_chunk = process_chunk(line_length, &mut solver, &mut stats, chunk);
-                    tx.send((index, solved_chunk))
-                        .expect("Error sending chunk to writer");
-                }
-                stats
-            })
-        })
-        .collect()
 }
 
-fn process_chunk<S: Solver>(
-    line_length: usize,
-    solver: &mut S,
-    stats: &mut Stats,
-    chunk: Vec<u8>,
-) -> Vec<u8> {
-    let mut solved_chunk = Vec::with_capacity(chunk.len() * 3);
+impl<S: Solver> Worker<S> {
+    fn process_chunk(&self, chunk: PuzzleChunk, state: &mut S::State) -> SolvedChunk {
+        let start = std::time::Instant::now();
+        let data = &chunk.mmap[chunk.start..chunk.end];
+        let mut solved = SolvedChunk {
+            id: chunk.id,
+            data: Vec::with_capacity(data.len() * 3),
+            stats: ChunkStats::default(),
+        };
 
-    for puzzle_slice in chunk.chunks_exact(line_length) {
-        // assert!(puzzle_slice[N_CELLS] == b'\n', "Invalid chunk format");
+        for puzzle_slice in data.chunks_exact(self.line_length) {
+            let puzzle = Puzzle::new(&puzzle_slice[..N_CELLS]);
+            solved.stats.puzzles += 1;
 
-        let sudoku = Sudoku::new(puzzle_slice[..N_CELLS].try_into().unwrap());
+            solved.data.extend_from_slice(puzzle.grid.as_ref());
+            solved.data.push(b',');
 
-        solved_chunk.extend_from_slice(sudoku.grid.as_ref());
-        solved_chunk.push(b',');
+            let solution = match self.solver.solve(&puzzle, state) {
+                Some(solution) => solution,
+                None => {
+                    let sudoku = puzzle.sudoku();
+                    panic!(
+                        "Failed to solve sudoku {}: {}\n{}",
+                        solved.stats.puzzles,
+                        sudoku.to_string(),
+                        sudoku.pretty()
+                    )
+                }
+            };
 
-        let solution = solver.solve(&sudoku).expect("Failed to solve sudoku");
-
-        solved_chunk.extend_from_slice(solution.grid.as_ref());
-        solved_chunk.push(b'\n');
-
-        stats.puzzles += 1;
-        if solver.guesses() == 0 {
-            stats.no_guesses += 1;
+            solved.data.extend_from_slice(solution.grid.as_ref());
+            solved.data.push(b'\n');
         }
-        stats.guesses += solver.guesses();
+
+        solved.stats.chunks += 1;
+        solved.stats.elapsed = start.elapsed();
+        solved
     }
 
-    solved_chunk
+    pub fn spawn(
+        solver: S,
+        line_length: usize,
+        chunk_rx: channel::Receiver<PuzzleChunk>,
+        output_tx: channel::Sender<SolvedChunk>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let mut state = solver.make_state();
+            let worker = Worker {
+                solver,
+                line_length,
+            };
+            for chunk in chunk_rx.iter() {
+                let solved = worker.process_chunk(chunk, &mut state);
+                output_tx.send(solved).expect("Failed to send output chunk");
+            }
+        })
+    }
+
+    pub fn spawn_multiple(
+        solver: S,
+        line_length: usize,
+        chunk_rx: channel::Receiver<PuzzleChunk>,
+        output_tx: channel::Sender<SolvedChunk>,
+        num_workers: usize,
+    ) -> Vec<thread::JoinHandle<()>> {
+        let mut handles = Vec::new();
+        for _ in 0..num_workers {
+            let handle = Worker::spawn(
+                solver.clone(),
+                line_length,
+                chunk_rx.clone(),
+                output_tx.clone(),
+            );
+            handles.push(handle);
+        }
+        handles
+    }
 }

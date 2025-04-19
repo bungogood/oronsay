@@ -1,11 +1,13 @@
-use crate::{solver::Solver, sudoku::Sudoku};
+use crate::solver::Solver;
+use crate::sudoku::{Puzzle, Sudoku};
 
 type Bits = u32;
 const ALL: Bits = 0x1ff;
 
 type RowColSub = (usize, usize, usize);
 
-pub struct SolverBasic {
+#[derive(Clone, Default)]
+pub struct BasicState {
     rows: [Bits; 9],
     cols: [Bits; 9],
     subs: [Bits; 9],
@@ -17,7 +19,7 @@ pub struct SolverBasic {
     num_solutions: usize,
 }
 
-impl SolverBasic {
+impl BasicState {
     pub fn new(limit: usize, min_heuristic: bool) -> Self {
         Self {
             rows: [ALL; 9],
@@ -32,7 +34,7 @@ impl SolverBasic {
         }
     }
 
-    fn init(&mut self, puzzle: &Sudoku, solution: &mut Sudoku) -> bool {
+    fn setup(&mut self, puzzle: &Puzzle, solution: &mut Sudoku) -> bool {
         self.rows.fill(ALL);
         self.cols.fill(ALL);
         self.subs.fill(ALL);
@@ -47,7 +49,6 @@ impl SolverBasic {
                 let cell = row * 9 + col;
                 let sub = (row / 3) * 3 + col / 3;
                 solution.grid[cell] = puzzle.grid[cell];
-
                 if b'1' <= puzzle.grid[cell] && puzzle.grid[cell] <= b'9' {
                     // A given clue: clear availability bits for row, col, and box.
                     let value = 1u32 << (puzzle.grid[cell] as u32 - b'1' as u32);
@@ -59,10 +60,13 @@ impl SolverBasic {
                         self.cols[col] ^= value;
                         self.subs[sub] ^= value;
                     } else {
+                        println!(
+                            "Invalid puzzle: row: {}, col: {}, sub: {}, value: {}",
+                            row, col, sub, value
+                        );
                         return false;
                     }
                 } else {
-                    // Blank cell: add to the todo list.
                     self.todo.push((row, col, sub));
                 }
             }
@@ -85,15 +89,30 @@ impl SolverBasic {
             sublist.swap(0, min_element_index);
         }
     }
+}
 
-    fn satisfy(&mut self, todo_index: usize, solution: &mut Sudoku) -> bool {
+#[derive(Clone)]
+pub struct SolverBasic {
+    limit: usize,
+    min_heuristic: bool,
+}
+
+impl SolverBasic {
+    pub fn new(limit: usize, min_heuristic: bool) -> Self {
+        Self {
+            limit,
+            min_heuristic,
+        }
+    }
+
+    fn satisfy(&self, todo_index: usize, solution: &mut Sudoku, state: &mut BasicState) -> bool {
         if self.min_heuristic {
-            self.mcv(todo_index);
+            state.mcv(todo_index);
         }
 
-        let (row, col, sub) = self.todo[todo_index];
+        let (row, col, sub) = state.todo[todo_index];
 
-        let mut candidates = self.rows[row] & self.cols[col] & self.subs[sub];
+        let mut candidates = state.rows[row] & state.cols[col] & state.subs[sub];
         // println!("canditates: {}", candidates.count_ones());
 
         while candidates != 0 {
@@ -102,30 +121,30 @@ impl SolverBasic {
 
             // Only count assignment as a guess if there's more than one candidate.
             if candidates ^ candidate != 0 {
-                self.guesses += 1;
+                state.guesses += 1;
             }
 
             // Clear the candidate from available candidate sets for row, col, box.
-            self.rows[row] ^= candidate;
-            self.cols[col] ^= candidate;
-            self.subs[sub] ^= candidate;
+            state.rows[row] ^= candidate;
+            state.cols[col] ^= candidate;
+            state.subs[sub] ^= candidate;
 
             solution.grid[row * 9 + col] = b'1' + ci;
             // Recursively solve remaining cells and back out with the last solution.
-            if todo_index < self.num_todo {
-                self.satisfy(todo_index + 1, solution);
+            if todo_index < state.num_todo {
+                self.satisfy(todo_index + 1, solution, state);
             } else {
-                self.num_solutions += 1;
+                state.num_solutions += 1;
             }
 
-            if self.num_solutions == self.limit {
+            if state.num_solutions == self.limit {
                 return true;
             }
 
             // Restore the candidate to available candidate sets for row, col, box.
-            self.rows[row] ^= candidate;
-            self.cols[col] ^= candidate;
-            self.subs[sub] ^= candidate;
+            state.rows[row] ^= candidate;
+            state.cols[col] ^= candidate;
+            state.subs[sub] ^= candidate;
 
             candidates ^= candidate;
         }
@@ -134,16 +153,18 @@ impl SolverBasic {
 }
 
 impl Solver for SolverBasic {
-    fn solve(&mut self, puzzle: &Sudoku) -> Option<Sudoku> {
-        let mut solution = puzzle.clone();
-        if self.init(puzzle, &mut solution) && self.satisfy(0, &mut solution) {
+    type State = BasicState;
+
+    fn make_state(&self) -> Self::State {
+        BasicState::default()
+    }
+
+    fn solve(&self, puzzle: &Puzzle, state: &mut Self::State) -> Option<Sudoku> {
+        let mut solution = puzzle.sudoku();
+        if state.setup(puzzle, &mut solution) && self.satisfy(0, &mut solution, state) {
             Some(solution)
         } else {
             None
         }
-    }
-
-    fn guesses(&self) -> usize {
-        self.guesses
     }
 }

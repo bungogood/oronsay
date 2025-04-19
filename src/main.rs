@@ -1,114 +1,119 @@
-use std::{
-    fs::{self, File},
-    io::{self, BufReader, BufWriter, Read},
-    path::PathBuf,
-    thread,
-    time::Duration,
-};
-
 use clap::Parser;
-use crossbeam_channel;
+use crossbeam::channel;
+use memmap2::MmapOptions;
 use num_format::{Locale, ToFormattedString};
-use tempfile::NamedTempFile;
-
-use orsay::{reader, solver::Stats, worker, writer};
+use oronsay::{ChunkStats, Reader, SolverBasic, Worker, Writer};
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use std::{io, thread};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// Input file
     #[clap(short, long)]
-    infile: Option<PathBuf>,
+    infile: PathBuf,
 
+    /// Output file
     #[clap(short, long)]
     outfile: Option<PathBuf>,
 
+    /// Number of worker threads
     #[clap(short = 't', long = "threads")]
     num_threads: Option<usize>,
 
+    /// Chunk size in kB
+    #[clap(short, long, default_value_t = 16)]
+    chunk_size: usize,
+
+    /// No hash
+    #[clap(short, long)]
+    no_hash: bool,
+
+    /// Verbose output
     #[clap(short, long)]
     verbose: bool,
 }
 
 fn get_num_threads() -> usize {
     thread::available_parallelism()
-        .map(|num| num.get())
+        .map(|n| n.get())
         .unwrap_or(1)
 }
 
-fn main() -> io::Result<()> {
-    let args = Args::parse();
+fn display_stats(
+    stats: &ChunkStats,
+    hash: Option<String>,
+    elapsed: Duration,
+    num_threads: usize,
+) -> io::Result<()> {
+    let real_rate = stats.puzzles as f64 / elapsed.as_secs_f64();
+    let real_avg_time = elapsed / stats.puzzles as u32;
 
-    let start = std::time::Instant::now();
+    let solver_rate = stats.puzzles as f64 / stats.elapsed.as_secs_f64();
+    let solver_avg_time = stats.elapsed / stats.puzzles as u32;
 
-    let num_workers = args.num_threads.unwrap_or(get_num_threads());
-
-    let (read_tx, read_rx) = crossbeam_channel::unbounded();
-    let (write_tx, write_rx) = crossbeam_channel::unbounded();
-
-    let input: Box<dyn Read + Send> = match args.infile {
-        Some(ref path) => Box::new(File::open(path)?),
-        None => Box::new(io::stdin()),
-    };
-    let (outfile, temp_file) = match args.outfile {
-        Some(ref path) => (File::create(path)?, None),
-        None => {
-            let temp_file = NamedTempFile::new()?;
-            (temp_file.reopen()?, Some(temp_file))
-        }
-    };
-
-    let buf_reader = BufReader::new(input);
-    let buf_writer = BufWriter::new(outfile);
-
-    let (line_length, reader_thread) = reader::start_reader(buf_reader, read_tx, write_tx.clone())?;
-    let worker_threads = worker::start_workers(num_workers, line_length, read_rx, write_tx);
-    let writer_thread = writer::start_writer(buf_writer, write_rx);
-
-    let mut stats = Stats::new();
-    reader_thread.join().expect("Error joining reader thread");
-    for worker in worker_threads {
-        stats.add(&worker.join().expect("Error joining worker thread"));
-    }
-    writer_thread.join().expect("Error joining writer thread");
-
-    if args.verbose {
-        let outpath = match temp_file.as_ref() {
-            Some(temp_file) => temp_file.path().to_path_buf(),
-            None => args.outfile.unwrap(),
-        };
-        display_stats(&stats, start.elapsed(), &outpath)?;
-    }
-
-    Ok(())
-}
-
-fn display_stats(stats: &Stats, duration: Duration, outpath: &PathBuf) -> io::Result<()> {
-    let sudokus_rate = stats.puzzles as f64 / duration.as_secs_f64();
-    let avg_time = duration / stats.puzzles as u32;
     let guess_rate = stats.guesses as f32 / stats.puzzles as f32;
     let no_guess_percent = (stats.no_guesses as f32 / stats.puzzles as f32) * 100.0;
 
     println!(
-        "Number of puzzles: {}",
-        stats.puzzles.to_formatted_string(&Locale::en)
+        "   # Puzzles: {}, No Guesses: {:.2}%, Avg Guesses: {:.2}",
+        stats.puzzles.to_formatted_string(&Locale::en),
+        no_guess_percent,
+        guess_rate
     );
     println!(
-        "Time Taken: {:.2?}, Solve Rate: {}/s, Avg: {:.2?}",
-        duration,
-        (sudokus_rate as u32).to_formatted_string(&Locale::en),
-        avg_time
+        "   Real Time: {:.2?}, Rate: {}/s, Avg: {:.2?}, # Chunks: {}",
+        elapsed,
+        (real_rate as u32).to_formatted_string(&Locale::en),
+        real_avg_time,
+        stats.chunks.to_formatted_string(&Locale::en)
     );
     println!(
-        "No Guesses: {:.2}%, Avg Guesses: {:.2}",
-        no_guess_percent, guess_rate
+        " Solver Time: {:.2?}, Rate: {}/s, Avg: {:.2?}, # Threads: {}",
+        stats.elapsed,
+        (solver_rate as u32).to_formatted_string(&Locale::en),
+        solver_avg_time,
+        num_threads
     );
 
-    let out_bytes = fs::read(outpath)?;
-    let sha256sum = crypto_hash::hex_digest(crypto_hash::Algorithm::SHA256, &out_bytes);
-    // let md5sum = crypto_hash::hex_digest(crypto_hash::Algorithm::MD5, &out_bytes);
-
-    println!("SHA-256 Hash: {}", sha256sum);
-    // println!("MD5 Hash:     {}", md5sum);
+    match hash {
+        Some(ref h) => println!("SHA-256 Hash: {}", h),
+        None => println!("SHA-256 Hash: Not computed"),
+    };
 
     Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let args = Args::parse();
+    let num_workers = args.num_threads.unwrap_or(get_num_threads());
+    let chunk_size = args.chunk_size * 1024;
+
+    let input_file = File::open(&args.infile)?;
+    let mmap = unsafe { MmapOptions::new().map(&input_file)? };
+    let mmap = Arc::new(mmap);
+
+    let (chunk_tx, chunk_rx) = channel::unbounded();
+    let (output_tx, output_rx) = channel::unbounded();
+
+    let start = std::time::Instant::now();
+
+    let solver = SolverBasic::new(1, true);
+
+    let (line_length, reader_handle) =
+        Reader::spawn(Arc::clone(&mmap), chunk_tx, output_tx.clone(), chunk_size);
+    let worker_handles =
+        Worker::spawn_multiple(solver, line_length, chunk_rx, output_tx, num_workers);
+    let writer_handle = Writer::spawn(output_rx, args.outfile, args.no_hash, args.verbose);
+
+    reader_handle.join().expect("Reader panicked");
+    for handle in worker_handles {
+        handle.join().expect("Worker panicked");
+    }
+    let (hash, stats) = writer_handle.join().expect("Writer panicked");
+
+    display_stats(&stats, hash, start.elapsed(), num_workers)
 }

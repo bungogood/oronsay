@@ -1,4 +1,4 @@
-use crate::sudoku::Sudoku;
+use crate::sudoku::{Puzzle, Sudoku};
 
 mod basic;
 
@@ -26,7 +26,9 @@ impl Stats {
     }
 }
 
-pub trait Solver {
-    fn solve(&mut self, sudoku: &Sudoku) -> Option<Sudoku>;
-    fn guesses(&self) -> usize;
+pub trait Solver: Clone + Send + Sync + 'static {
+    type State;
+
+    fn make_state(&self) -> Self::State;
+    fn solve(&self, puzzle: &Puzzle, state: &mut Self::State) -> Option<Sudoku>;
 }

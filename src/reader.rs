@@ -1,109 +1,102 @@
-use std::{
-    io::{BufReader, Read, Result},
-    thread,
-};
+use std::{sync::Arc, thread};
 
-use crossbeam_channel::Sender;
+use crossbeam::channel;
+use memmap2::Mmap;
 
-fn find_newline_positions(buffer: &Vec<u8>) -> Option<(usize, usize)> {
-    let mut positions = Vec::new();
+use crate::types::{ChunkStats, PuzzleChunk, SolvedChunk};
 
-    for (i, &byte) in buffer.iter().enumerate() {
-        if byte == b'\n' {
-            positions.push(i);
-            if positions.len() == 2 {
-                break;
-            }
-        }
-    }
-
-    if positions.len() == 2 {
-        Some((positions[0], positions[1]))
-    } else {
-        None
-    }
+struct ReaderMetadata {
+    line_length: usize,
+    header_text: Option<Vec<u8>>,
+    data_start: usize,
 }
 
-pub fn start_reader<R: Read + Send + 'static>(
-    mut reader: BufReader<R>,
-    read_tx: Sender<(usize, Vec<u8>)>,
-    write_tx: Sender<(usize, Vec<u8>)>,
-) -> Result<(usize, thread::JoinHandle<()>)> {
-    // let buf_size = 65536; // 64 KiB
-    // let buf_size = 32768; // 32 KiB
-    let buf_size = 16368; // 16 KiB
+pub struct Reader;
 
-    let mut current_buffer = vec![0u8; buf_size];
-    let mut chunk_index = 0;
+impl Reader {
+    pub fn spawn(
+        mmap: Arc<Mmap>,
+        chunk_tx: channel::Sender<PuzzleChunk>,
+        output_tx: channel::Sender<SolvedChunk>,
+        chunk_size: usize,
+    ) -> (usize, thread::JoinHandle<()>) {
+        let metadata = Self::analyze_mmap(&mmap);
 
-    let initial_read_size = reader.read(&mut current_buffer)?;
+        let ReaderMetadata {
+            line_length,
+            header_text,
+            data_start,
+        } = match metadata {
+            Some(metadata) => metadata,
+            None => panic!("Failed to analyze mmap"),
+        };
 
-    let (first, second) = find_newline_positions(&current_buffer).expect("Error finding newlines");
-    let line_length = second - first;
+        let chunk_size = chunk_size - (chunk_size % line_length);
 
-    let reader = thread::spawn(move || {
-        let (pre_fix, post_fix) = if current_buffer[first - 1] == b'\r' {
+        // Optionally send header
+        let mut next_id = 0;
+        if let Some(header_text) = header_text {
+            output_tx
+                .send(SolvedChunk {
+                    id: next_id,
+                    data: header_text,
+                    stats: ChunkStats::default(),
+                })
+                .expect("Failed to send header chunk");
+            next_id += 1;
+        }
+
+        let reader = thread::spawn(move || {
+            let mut start = data_start;
+
+            while start < mmap.len() {
+                let end = (start + chunk_size).min(mmap.len());
+                let chunk = PuzzleChunk {
+                    id: next_id,
+                    start,
+                    end,
+                    mmap: Arc::clone(&mmap),
+                };
+                chunk_tx.send(chunk).expect("Failed to send chunk");
+                next_id += 1;
+                start += chunk_size;
+            }
+        });
+
+        (line_length, reader)
+    }
+
+    /// Finds line metadata and extracts header (if present)
+    fn analyze_mmap(mmap: &Mmap) -> Option<ReaderMetadata> {
+        let (first, second) = Self::find_line_bounds(&mmap[..])?;
+        let line_length = second - first;
+
+        // Determine if there's a header by looking at pre/post fix newline formatting
+        let (pre_fix, post_fix) = if first > 0 && mmap[first - 1] == b'\r' {
             (first - 2, first + 2)
         } else {
             (first - 1, first + 1)
         };
 
-        let mut next_buffer = if post_fix != line_length {
-            let mut header = current_buffer[..=pre_fix].to_vec();
+        let (header_text, data_start) = if post_fix != line_length {
+            let mut header = mmap[..=pre_fix].iter().copied().collect::<Vec<u8>>();
             header.push(b'\n');
-            write_tx
-                .send((chunk_index, header))
-                .expect("Error sending header to writer");
-            chunk_index += 1;
-            current_buffer[first + 1..initial_read_size].to_vec()
+            (Some(header), post_fix)
         } else {
-            current_buffer[..initial_read_size].to_vec()
+            (None, 0)
         };
 
-        loop {
-            let read_size = match reader.read(&mut current_buffer) {
-                Ok(0) => break, // End of file reached.
-                Ok(size) => size,
-                Err(e) => {
-                    eprintln!("Error reading file: {}", e);
-                    return;
-                }
-            };
+        Some(ReaderMetadata {
+            line_length,
+            header_text,
+            data_start,
+        })
+    }
 
-            // Append any carry-over from the previous iteration
-            let mut data = if !next_buffer.is_empty() {
-                let mut temp = std::mem::take(&mut next_buffer);
-                temp.extend_from_slice(&current_buffer[..read_size]);
-                temp
-            } else {
-                current_buffer[..read_size].to_vec()
-            };
-
-            // Find the last newline to determine the carry-over for the next chunk
-            if let Some(last_newline_pos) = data.iter().rposition(|&b| b == b'\n') {
-                next_buffer = data[last_newline_pos + 1..].to_vec();
-                data.truncate(last_newline_pos + 1);
-            } else {
-                next_buffer.clear();
-            }
-
-            if read_tx.send((chunk_index, data)).is_err() {
-                eprintln!("Error sending chunk to workers");
-                return;
-            }
-            chunk_index += 1;
-
-            // Prepare the current buffer for the next read, adjusting the size if necessary
-            current_buffer.resize(buf_size, 0);
-        }
-
-        // Handle any remaining data as carry-over
-        if !next_buffer.is_empty() {
-            if read_tx.send((chunk_index, next_buffer)).is_err() {
-                eprintln!("Error sending final carry-over chunk to workers");
-            }
-        }
-    });
-
-    Ok((line_length, reader))
+    fn find_line_bounds(buffer: &[u8]) -> Option<(usize, usize)> {
+        let mut newlines = buffer.iter().enumerate().filter(|(_, &b)| b == b'\n');
+        let first = newlines.next()?.0;
+        let second = newlines.next()?.0;
+        Some((first, second))
+    }
 }
