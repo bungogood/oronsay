@@ -1,6 +1,8 @@
 use crate::solver::Solver;
 use crate::sudoku::{Puzzle, Sudoku};
 
+use super::SolutionInfo;
+
 type Bits = u32;
 const ALL: Bits = 0x1ff;
 
@@ -12,15 +14,13 @@ pub struct BasicState {
     cols: [Bits; 9],
     subs: [Bits; 9],
     todo: Vec<RowColSub>,
-    limit: usize,
-    min_heuristic: bool,
     num_todo: usize,
     guesses: usize,
     num_solutions: usize,
 }
 
 impl BasicState {
-    pub fn new(limit: usize, min_heuristic: bool) -> Self {
+    pub fn new() -> Self {
         Self {
             rows: [ALL; 9],
             cols: [ALL; 9],
@@ -28,8 +28,6 @@ impl BasicState {
             todo: vec![],
             num_todo: 0,
             guesses: 0,
-            limit: limit,
-            min_heuristic: min_heuristic,
             num_solutions: 0,
         }
     }
@@ -159,10 +157,13 @@ impl Solver for SolverBasic {
         BasicState::default()
     }
 
-    fn solve(&self, puzzle: &Puzzle, state: &mut Self::State) -> Option<Sudoku> {
+    fn solve(&self, puzzle: &Puzzle, state: &mut Self::State) -> Option<SolutionInfo> {
         let mut solution = puzzle.sudoku();
         if state.setup(puzzle, &mut solution) && self.satisfy(0, &mut solution, state) {
-            Some(solution)
+            Some(SolutionInfo {
+                sudoku: solution,
+                guesses: state.guesses,
+            })
         } else {
             None
         }

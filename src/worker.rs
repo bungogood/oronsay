@@ -43,8 +43,13 @@ impl<S: Solver> Worker<S> {
                 }
             };
 
-            solved.data.extend_from_slice(solution.grid.as_ref());
+            solved.data.extend_from_slice(solution.sudoku.grid.as_ref());
             solved.data.push(b'\n');
+
+            solved.stats.guesses += solution.guesses;
+            if solution.guesses == 0 {
+                solved.stats.no_guesses += 1;
+            }
         }
 
         solved.stats.chunks += 1;
