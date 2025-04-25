@@ -5,5 +5,5 @@
 target/
 
 # Project
-data/
-logs/
+data
+logs
